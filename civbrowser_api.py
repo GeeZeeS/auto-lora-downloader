@@ -10,6 +10,41 @@ from pydantic import BaseModel, Field
 # Import modules from webui for direct access
 from modules import script_callbacks, shared
 
+class CivitaiAPISettings:
+    def __init__(self):
+        self.api_key = None
+        self.settings_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+            "civitai_api_settings.json"
+        )
+        self.load_settings()
+    
+    def load_settings(self):
+        """Load settings from JSON file"""
+        try:
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, 'r') as f:
+                    settings = json.load(f)
+                    self.api_key = settings.get('api_key')
+                    print("Civitai API settings loaded")
+        except Exception as e:
+            print(f"Error loading Civitai API settings: {e}")
+    
+    def save_settings(self):
+        """Save settings to JSON file"""
+        try:
+            with open(self.settings_file, 'w') as f:
+                json.dump({
+                    'api_key': self.api_key
+                }, f)
+            print("Civitai API settings saved")
+            return True
+        except Exception as e:
+            print(f"Error saving Civitai API settings: {e}")
+            return False
+
+civitai_settings = CivitaiAPISettings()
+
 # Add the API route manually
 def add_api_routes(app: FastAPI):
     """Add the Civitai Browser API routes"""
@@ -46,7 +81,38 @@ def add_api_routes(app: FastAPI):
         model_type: str = Field(..., description="Model type (checkpoint, lora, etc.)")
         filename: str = Field(..., description="Filename to delete")
         empty_trash: bool = Field(True, description="Whether to empty trash after deletion")
+
+    class APIKeyUpdate(BaseModel):
+        api_key: str = Field(..., description="Civitai API Key")
+
+    @app.post("/civitai/settings/api-key", tags=["Civitai Browser"])
+    async def update_api_key(request: APIKeyUpdate):
+        """Update the Civitai API key used for authenticated downloads"""
+        try:
+            # Update the API key in settings
+            civitai_settings.api_key = request.api_key
+            success = civitai_settings.save_settings()
+            
+            return {
+                "success": success,
+                "message": "API key updated successfully" if success else "Failed to save API key"
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error updating API key: {str(e)}")
     
+    @app.get("/civitai/settings/api-key-status", tags=["Civitai Browser"])
+    async def get_api_key_status():
+        """Check if a Civitai API key is configured"""
+        try:
+            has_key = civitai_settings.api_key is not None and civitai_settings.api_key.strip() != ""
+            
+            return {
+                "has_api_key": has_key,
+                "message": "API key is configured" if has_key else "No API key configured"
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error checking API key status: {str(e)}")
+        
     # Helper functions
     def get_civitai_api():
         """Get the CivitaiAPI instance"""
@@ -56,13 +122,23 @@ def add_api_routes(app: FastAPI):
             if civbrowser_path not in sys.path:
                 sys.path.append(civbrowser_path)
             from scripts.civitai_api import CivitaiAPI
-            return CivitaiAPI()
+            
+            # Create API instance with API key if available
+            api = CivitaiAPI()
+            if civitai_settings.api_key:
+                api.headers["Authorization"] = f"Bearer {civitai_settings.api_key}"
+            
+            return api
         except ImportError:
             # If not available, create minimal version
             class MinimalCivitaiAPI:
                 def __init__(self):
                     self.base_url = "https://civitai.com/api/v1"
                     self.headers = {"Content-Type": "application/json"}
+                    
+                    # Add API key if available
+                    if civitai_settings.api_key:
+                        self.headers["Authorization"] = f"Bearer {civitai_settings.api_key}"
                     
                 def get_model(self, model_id):
                     url = f"{self.base_url}/models/{model_id}"
@@ -169,8 +245,13 @@ def add_api_routes(app: FastAPI):
             # Create directory if needed
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             
+            # Set up headers with API key if available
+            headers = {}
+            if civitai_settings.api_key:
+                headers["Authorization"] = f"Bearer {civitai_settings.api_key}"
+            
             # Download the file
-            with requests.get(url, stream=True) as r:
+            with requests.get(url, stream=True, headers=headers) as r:
                 r.raise_for_status()
                 total = int(r.headers.get('content-length', 0))
                 
@@ -189,6 +270,11 @@ def add_api_routes(app: FastAPI):
             
             print(f"\nDownload completed: {dest_path}")
             return True
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 401:
+                print(f"Authentication required for download. Please set your Civitai API key with the /civitai/settings/api-key endpoint.")
+            print(f"Download error: {str(e)}")
+            return False
         except Exception as e:
             print(f"Download error: {str(e)}")
             return False

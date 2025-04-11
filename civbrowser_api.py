@@ -90,26 +90,56 @@ def add_api_routes(app: FastAPI):
         return None
 
     def find_model_file(model_filename, model_type):
-        """Find a model file in the appropriate folder"""
-        folder = get_model_folder(model_type)
-        if not folder:
-            return None
-        
-        # Check if file exists
-        full_path = os.path.join(folder, model_filename)
-        if os.path.exists(full_path):
-            return full_path
-        
-        # Try common extensions
+    """Find a model file in the appropriate folder, handling various naming patterns"""
+    folder = get_model_folder(model_type)
+    if not folder:
+        return None
+    
+    # Extract base name and extension
+    name_without_ext, ext = os.path.splitext(model_filename)
+    
+    # Check if file exists with exact name
+    full_path = os.path.join(folder, model_filename)
+    if os.path.exists(full_path):
+        return full_path
+    
+    # Check for common extensions if no extension or different extension
+    if not ext:
         extensions = [".safetensors", ".ckpt", ".pt"]
-        name_without_ext = os.path.splitext(model_filename)[0]
-        
-        for ext in extensions:
-            test_path = os.path.join(folder, name_without_ext + ext)
+        for test_ext in extensions:
+            test_path = os.path.join(folder, name_without_ext + test_ext)
             if os.path.exists(test_path):
                 return test_path
-        
-        return None
+    
+    # Check for files with ID suffix pattern (name_123456.ext)
+    files_in_dir = os.listdir(folder)
+    
+    # First try to match exact name with any suffix
+    suffix_pattern = f"{name_without_ext}_[0-9]+"
+    if ext:
+        suffix_pattern += f"\\{ext}$"
+    
+    import re
+    suffix_regex = re.compile(suffix_pattern)
+    
+    for filename in files_in_dir:
+        if suffix_regex.match(filename):
+            return os.path.join(folder, filename)
+    
+    # Try more flexible matching (case insensitive, partial match)
+    # This handles cases where the name might be slightly different
+    name_lower = name_without_ext.lower()
+    for filename in files_in_dir:
+        file_lower = filename.lower()
+        # If filename contains the model name and has the right extension
+        if name_lower in file_lower and (not ext or file_lower.endswith(ext.lower())):
+            return os.path.join(folder, filename)
+        # If filename contains the model name and has a common extension
+        elif name_lower in file_lower and any(file_lower.endswith(e) for e in [".safetensors", ".ckpt", ".pt"]):
+            return os.path.join(folder, filename)
+    
+    # If nothing is found, return None
+    return None
 
     def download_model_file(url, dest_path):
         """Download a file with progress reporting"""

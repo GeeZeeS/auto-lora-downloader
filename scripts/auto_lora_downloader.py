@@ -4,9 +4,11 @@ import requests
 import time
 from pathlib import Path
 import copy
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, Depends
 from modules import script_callbacks, shared, api
-from modules.api.models import StableDiffusionTxt2ImgProcessingAPI
+from modules.api.models import *
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
 from modules.processing import StableDiffusionProcessingTxt2Img, StableDiffusionProcessingImg2Img, process_images
 from modules.scripts import basedir
 
@@ -290,9 +292,24 @@ def on_ui_tabs():
                 
     return [(ui_component, "Auto LoRA Downloader", "auto_lora_downloader")]
 
-# Custom API endpoint for txt2img with LoRA downloading
-class Txt2ImgWithLoRADownload(StableDiffusionTxt2ImgProcessingAPI):
-    lora_model_ids: list[str] = []
+# Custom API model for txt2img with LoRA downloading
+class Txt2ImgWithLoRADownloadRequest(StableDiffusionTxt2ImgProcessingAPI):
+    """API request for txt2img with automatic LoRA downloading"""
+    lora_model_ids: List[str] = Field(default=[], description="List of CivitAI LoRA model IDs to check and download if missing")
+
+class LoRADownloadResult(BaseModel):
+    """Result of a LoRA download attempt"""
+    success: bool = Field(description="Whether the download was successful or the model already exists")
+    status: str = Field(description="Status of the download: 'downloaded', 'already_exists', 'not_lora', 'download_failed', or 'error'")
+    path: Optional[str] = Field(None, description="Path to the downloaded or existing LoRA file")
+    message: Optional[str] = Field(None, description="Error message if any")
+
+class Txt2ImgWithLoRADownloadResponse(BaseModel):
+    """API response for txt2img with LoRA downloading"""
+    images: List[str] = Field(description="List of generated images as base64 strings")
+    parameters: Dict[str, Any] = Field(description="Parameters used for generation")
+    info: str = Field(description="Generation info")
+    lora_downloads: Dict[str, LoRADownloadResult] = Field(description="Results of LoRA download attempts, keyed by model ID")
 
 def download_loras_by_ids(model_ids):
     """Download LoRAs from CivitAI by their model IDs"""
@@ -345,7 +362,17 @@ def download_loras_by_ids(model_ids):
             
     return results
 
-def api_txt2img_with_lora_download(params: Txt2ImgWithLoRADownload = Body(...)):
+def api_txt2img_with_lora_download(params: Txt2ImgWithLoRADownloadRequest = Depends()):
+    """
+    Generate images with txt2img and automatically download missing LoRAs by their CivitAI model IDs.
+    
+    This endpoint extends the standard txt2img API with the ability to check and download 
+    LoRA models from CivitAI before generation.
+    
+    - **lora_model_ids**: List of CivitAI model IDs to check and download if missing
+    
+    Returns both the generated images and the results of each LoRA download attempt.
+    """
     # Extract and process LoRA model IDs
     model_ids = params.lora_model_ids
     lora_results = {}
@@ -375,7 +402,17 @@ def on_app_started(_gradio_app, _demo):
     # Register API endpoint
     try:
         from modules.api.api import app
-        app.add_api_route("/sdapi/v1/txt2img-with-lora", api_txt2img_with_lora_download, methods=["POST"])
+        
+        # Add the API endpoint with proper documentation
+        app.add_api_route(
+            "/sdapi/v1/txt2img-with-lora", 
+            api_txt2img_with_lora_download, 
+            methods=["POST"],
+            response_model=Txt2ImgWithLoRADownloadResponse,
+            description="Generate images with txt2img and automatically download missing LoRAs by their CivitAI model IDs",
+            tags=["Generation"]
+        )
+        
         print("Registered /sdapi/v1/txt2img-with-lora API endpoint")
     except Exception as e:
         print(f"Failed to register custom API endpoint: {e}")

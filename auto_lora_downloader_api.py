@@ -46,8 +46,8 @@ def add_api_endpoints(app, fastapi_args={}):
         class Txt2ImgWithLoRARequest(StableDiffusionTxt2ImgProcessingAPI):
             lora_model_ids: List[str] = Field(default=[], description="CivitAI model IDs to download")
         
-        # Register the endpoint
-        @app.post("/sdapi/v1/txt2img-with-lora", 
+        # Register the endpoint with the correct URL path
+        @app.post("/txt2img-with-lora", 
                  tags=["Generation"], 
                  summary="Generate images with automatic LoRA downloading",
                  description="This endpoint combines txt2img generation with automatic downloading of missing LoRAs from CivitAI")

@@ -245,31 +245,22 @@ def add_api_routes(app: FastAPI):
             # Create directory if needed
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             
-            # Set up headers with API key if available
-            headers = {}
+            # Modify URL to include token if available
             if civitai_settings.api_key:
-                headers["Authorization"] = f"Bearer {civitai_settings.api_key}"
-                print(f"Using API key: {civitai_settings.api_key[:5]}...{civitai_settings.api_key[-5:] if len(civitai_settings.api_key) > 10 else ''}")
-            else:
-                print("No API key configured")
-            
-            print(f"Downloading from URL: {url}")
-            print(f"Using headers: {headers}")
-            
-            # Check if this is a direct download URL or needs to be modified
-            if '/api/download/models/' in url:
-                # This is already a download URL
-                download_url = url
-            elif '/models/' in url and not url.startswith('https://civitai.com/api/'):
-                # Convert regular model URL to API download URL
-                model_id = url.split('/models/')[1].split('/')[0].split('?')[0]
-                download_url = f"https://civitai.com/api/download/models/{model_id}"
-                print(f"Converted URL to download URL: {download_url}")
+                # Check if URL already has query parameters
+                if '?' in url:
+                    download_url = f"{url}&token={civitai_settings.api_key}"
+                else:
+                    download_url = f"{url}?token={civitai_settings.api_key}"
+                print(f"Using token parameter in URL (token partially masked): {civitai_settings.api_key[:5]}...{civitai_settings.api_key[-5:] if len(civitai_settings.api_key) > 10 else ''}")
             else:
                 download_url = url
+                print("No API key configured, using URL without token")
+            
+            print(f"Downloading from URL: {download_url.replace(civitai_settings.api_key, 'TOKEN_HIDDEN') if civitai_settings.api_key else download_url}")
             
             # Download the file
-            with requests.get(download_url, stream=True, headers=headers) as r:
+            with requests.get(download_url, stream=True) as r:
                 # Print response info for debugging
                 print(f"Response status: {r.status_code}")
                 print(f"Response headers: {dict(r.headers)}")
@@ -297,8 +288,8 @@ def add_api_routes(app: FastAPI):
                 print(f"Authentication error 401: {str(e)}")
                 print("This model requires proper authentication.")
                 print("Possible solutions:")
-                print("1. Check if your API key is correct")
-                print("2. Make sure your API key has 'Models:Read' permission")
+                print("1. Check if your API key/token is correct")
+                print("2. Make sure your API key has access to this model")
                 print("3. This model might require you to be logged in with a Civitai account that has access")
                 # Try to get the response body for more details
                 try:

@@ -331,7 +331,7 @@ def setup_api(app: FastAPI):
     class Txt2ImgWithLoRARequest(StableDiffusionTxt2ImgProcessingAPI):
         lora_model_ids: List[str] = []
 
-    @app.post("/sdapi/v1/txt2img-with-lora")
+    @app.post("/txt2img-with-lora")
     async def txt2img_with_lora(req: Txt2ImgWithLoRARequest = Body(...)):
         from modules.api.api import Api
         
@@ -374,7 +374,7 @@ def setup_api(app: FastAPI):
             
             return result
     
-    @app.post("/sdapi/v1/check-lora")
+    @app.post("/check-lora")
     async def check_lora(
         model_ids: List[str] = Body(..., description="CivitAI model IDs to check/download")
     ):

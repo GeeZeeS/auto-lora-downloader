@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 import requests
 from typing import List, Optional, Dict, Any, Union
 from fastapi import FastAPI, Depends, HTTPException, Query, Body
@@ -29,7 +30,8 @@ def add_api_routes(app: FastAPI):
         exists: bool = Field(..., description="Whether the model exists locally")
         model_id: int = Field(..., description="Civitai Model ID")
         version_id: Optional[int] = Field(None, description="Version ID")
-        filename: Optional[str] = Field(None, description="Filename if exists")
+        filename: Optional[str] = Field(None, description="Original filename from Civitai")
+        found_file: Optional[str] = Field(None, description="Actual filename found locally (may differ)")
         path: Optional[str] = Field(None, description="Full path if exists")
 
     class DownloadResponse(BaseModel):
@@ -44,7 +46,9 @@ def add_api_routes(app: FastAPI):
         """Get the CivitaiAPI instance"""
         try:
             # First try to import from original extension
-            sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sd-webui-civbrowser"))
+            civbrowser_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sd-webui-civbrowser")
+            if civbrowser_path not in sys.path:
+                sys.path.append(civbrowser_path)
             from scripts.civitai_api import CivitaiAPI
             return CivitaiAPI()
         except ImportError:
@@ -90,56 +94,68 @@ def add_api_routes(app: FastAPI):
         return None
 
     def find_model_file(model_filename, model_type):
-    """Find a model file in the appropriate folder, handling various naming patterns"""
-    folder = get_model_folder(model_type)
-    if not folder:
+        """Find a model file in the appropriate folder, handling various naming patterns"""
+        folder = get_model_folder(model_type)
+        if not folder:
+            return None
+        
+        # Debug info
+        print(f"Looking for model file: {model_filename} in {folder}")
+        
+        # Extract base name and extension
+        name_without_ext, ext = os.path.splitext(model_filename)
+        
+        # Check if file exists with exact name
+        full_path = os.path.join(folder, model_filename)
+        if os.path.exists(full_path):
+            print(f"Found exact match: {full_path}")
+            return full_path
+        
+        # Check for common extensions if no extension or different extension
+        if not ext:
+            extensions = [".safetensors", ".ckpt", ".pt"]
+            for test_ext in extensions:
+                test_path = os.path.join(folder, name_without_ext + test_ext)
+                if os.path.exists(test_path):
+                    print(f"Found extension match: {test_path}")
+                    return test_path
+        
+        # Check for files with ID suffix pattern (name_123456.ext)
+        try:
+            files_in_dir = os.listdir(folder)
+        except Exception as e:
+            print(f"Error listing files in directory: {e}")
+            return None
+        
+        # First try to match exact name with any suffix
+        suffix_pattern = f"{re.escape(name_without_ext)}_[0-9]+"
+        if ext:
+            suffix_pattern += f"\\{ext}$"
+        
+        suffix_regex = re.compile(suffix_pattern)
+        
+        for filename in files_in_dir:
+            if suffix_regex.match(filename):
+                print(f"Found ID suffix match: {filename}")
+                return os.path.join(folder, filename)
+        
+        # Try more flexible matching (case insensitive, partial match)
+        # This handles cases where the name might be slightly different
+        name_lower = name_without_ext.lower()
+        for filename in files_in_dir:
+            file_lower = filename.lower()
+            # If filename contains the model name and has the right extension
+            if name_lower in file_lower and (not ext or file_lower.endswith(ext.lower())):
+                print(f"Found partial name match with extension: {filename}")
+                return os.path.join(folder, filename)
+            # If filename contains the model name and has a common extension
+            elif name_lower in file_lower and any(file_lower.endswith(e) for e in [".safetensors", ".ckpt", ".pt"]):
+                print(f"Found partial name match with common extension: {filename}")
+                return os.path.join(folder, filename)
+        
+        # If nothing is found, return None
+        print(f"No matching file found for {model_filename}")
         return None
-    
-    # Extract base name and extension
-    name_without_ext, ext = os.path.splitext(model_filename)
-    
-    # Check if file exists with exact name
-    full_path = os.path.join(folder, model_filename)
-    if os.path.exists(full_path):
-        return full_path
-    
-    # Check for common extensions if no extension or different extension
-    if not ext:
-        extensions = [".safetensors", ".ckpt", ".pt"]
-        for test_ext in extensions:
-            test_path = os.path.join(folder, name_without_ext + test_ext)
-            if os.path.exists(test_path):
-                return test_path
-    
-    # Check for files with ID suffix pattern (name_123456.ext)
-    files_in_dir = os.listdir(folder)
-    
-    # First try to match exact name with any suffix
-    suffix_pattern = f"{name_without_ext}_[0-9]+"
-    if ext:
-        suffix_pattern += f"\\{ext}$"
-    
-    import re
-    suffix_regex = re.compile(suffix_pattern)
-    
-    for filename in files_in_dir:
-        if suffix_regex.match(filename):
-            return os.path.join(folder, filename)
-    
-    # Try more flexible matching (case insensitive, partial match)
-    # This handles cases where the name might be slightly different
-    name_lower = name_without_ext.lower()
-    for filename in files_in_dir:
-        file_lower = filename.lower()
-        # If filename contains the model name and has the right extension
-        if name_lower in file_lower and (not ext or file_lower.endswith(ext.lower())):
-            return os.path.join(folder, filename)
-        # If filename contains the model name and has a common extension
-        elif name_lower in file_lower and any(file_lower.endswith(e) for e in [".safetensors", ".ckpt", ".pt"]):
-            return os.path.join(folder, filename)
-    
-    # If nothing is found, return None
-    return None
 
     def download_model_file(url, dest_path):
         """Download a file with progress reporting"""
@@ -221,17 +237,24 @@ def add_api_routes(app: FastAPI):
             # Check if file exists
             file_path = find_model_file(filename, request.model_type)
             
+            # Get actual filename if found
+            found_file = os.path.basename(file_path) if file_path else None
+            
             return {
                 "exists": file_path is not None,
                 "model_id": request.model_id,
                 "version_id": version_id,
                 "filename": filename,
+                "found_file": found_file,
                 "path": file_path
             }
         
         except HTTPException:
             raise
         except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"Error checking model existence: {error_details}")
             raise HTTPException(status_code=500, detail=f"Error checking model: {str(e)}")
 
     # Download model endpoint
@@ -253,7 +276,7 @@ def add_api_routes(app: FastAPI):
             if model_exists["exists"] and not request.force:
                 return {
                     "success": True,
-                    "message": "Model already exists",
+                    "message": f"Model already exists as {model_exists['found_file']}",
                     "file_path": model_exists["path"],
                     "model_id": request.model_id,
                     "version_id": model_exists["version_id"]
@@ -308,8 +331,10 @@ def add_api_routes(app: FastAPI):
             if not download_url:
                 raise HTTPException(status_code=404, detail="Download URL not found")
             
-            # Create full path
-            dest_path = os.path.join(folder, filename)
+            # Create full path - add version ID to filename to avoid conflicts
+            name_without_ext, ext = os.path.splitext(filename)
+            versioned_filename = f"{name_without_ext}_{version.get('id')}{ext}"
+            dest_path = os.path.join(folder, versioned_filename)
             
             # Download the file
             print(f"Downloading {filename} to {dest_path}")
@@ -339,70 +364,71 @@ def add_api_routes(app: FastAPI):
             print(f"Error downloading model: {error_details}")
             raise HTTPException(status_code=500, detail=f"Error downloading model: {str(e)}")
 
-    # Return our app with routes added
-    return app
-
-@app.post("/civitai/debug/files", tags=["Civitai Browser"])
-async def debug_model_files(
-    model_type: str = Query(..., description="Model type (checkpoint, lora, etc.)"),
-    search_term: Optional[str] = Query(None, description="Optional search term to filter files")
-):
-    """Debug endpoint to list all files of a given model type, optionally filtered by search term"""
-    try:
-        # Get model folder
-        folder = get_model_folder(model_type)
-        if not folder:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid model type: {model_type}. Available types: checkpoint, lora, lycoris, embedding, hypernetwork, vae"
-            )
-        
-        # List all files in the folder
+    # Debug endpoint to list files
+    @app.post("/civitai/debug/files", tags=["Civitai Browser"])
+    async def debug_model_files(
+        model_type: str = Query(..., description="Model type (checkpoint, lora, etc.)"),
+        search_term: Optional[str] = Query(None, description="Optional search term to filter files")
+    ):
+        """Debug endpoint to list all files of a given model type, optionally filtered by search term"""
         try:
-            files = os.listdir(folder)
-        except Exception as e:
+            # Get model folder
+            folder = get_model_folder(model_type)
+            if not folder:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid model type: {model_type}. Available types: checkpoint, lora, lycoris, embedding, hypernetwork, vae"
+                )
+            
+            # List all files in the folder
+            try:
+                files = os.listdir(folder)
+            except Exception as e:
+                return {
+                    "error": f"Could not list files in folder: {str(e)}",
+                    "folder": folder,
+                    "exists": os.path.exists(folder)
+                }
+            
+            # Filter by search term if provided
+            if search_term:
+                search_term = search_term.lower()
+                files = [f for f in files if search_term in f.lower()]
+            
+            # Return file details
+            file_details = []
+            for filename in files:
+                full_path = os.path.join(folder, filename)
+                try:
+                    size = os.path.getsize(full_path)
+                    modified = os.path.getmtime(full_path)
+                    file_details.append({
+                        "filename": filename,
+                        "path": full_path,
+                        "size_bytes": size,
+                        "size_mb": round(size / (1024 * 1024), 2),
+                        "modified": modified
+                    })
+                except Exception as e:
+                    file_details.append({
+                        "filename": filename,
+                        "path": full_path,
+                        "error": str(e)
+                    })
+            
             return {
-                "error": f"Could not list files in folder: {str(e)}",
                 "folder": folder,
-                "exists": os.path.exists(folder)
+                "file_count": len(files),
+                "files": file_details
             }
         
-        # Filter by search term if provided
-        if search_term:
-            search_term = search_term.lower()
-            files = [f for f in files if search_term in f.lower()]
-        
-        # Return file details
-        file_details = []
-        for filename in files:
-            full_path = os.path.join(folder, filename)
-            try:
-                size = os.path.getsize(full_path)
-                modified = os.path.getmtime(full_path)
-                file_details.append({
-                    "filename": filename,
-                    "path": full_path,
-                    "size_bytes": size,
-                    "size_mb": round(size / (1024 * 1024), 2),
-                    "modified": modified
-                })
-            except Exception as e:
-                file_details.append({
-                    "filename": filename,
-                    "path": full_path,
-                    "error": str(e)
-                })
-        
-        return {
-            "folder": folder,
-            "file_count": len(files),
-            "files": file_details
-        }
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
+
+    # Return our app with routes added
+    return app
 
 # Function to register with the webui
 def on_app_started(demo, app):

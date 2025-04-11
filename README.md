@@ -1,11 +1,10 @@
-# SD-WebUI Civitai Browser API Extension
+# Civitai API Extension for Stable Diffusion WebUI
 
-This extension adds API endpoints with documentation (`/docs/`) to the [SD-WebUI Civitai Browser](https://github.com/SignalFlagZ/sd-webui-civbrowser) extension.
+A minimal API extension that adds `/civitai/exists` and `/civitai/download` endpoints to Stable Diffusion WebUI, with documentation available at `/docs`.
 
 ## Requirements
 
 - [Stable Diffusion WebUI](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
-- [SD-WebUI Civitai Browser](https://github.com/SignalFlagZ/sd-webui-civbrowser) extension installed
 - WebUI started with the `--api` flag
 
 ## Installation
@@ -13,7 +12,7 @@ This extension adds API endpoints with documentation (`/docs/`) to the [SD-WebUI
 1. Clone this repository into your `extensions` folder:
    ```
    cd stable-diffusion-webui/extensions
-   git clone https://github.com/yourusername/sd-webui-civbrowser-api
+   git clone https://github.com/yourusername/sd-webui-civitai-api
    ```
 
 2. Restart the WebUI with the `--api` flag:
@@ -23,31 +22,35 @@ This extension adds API endpoints with documentation (`/docs/`) to the [SD-WebUI
 
 ## Features
 
-- Adds comprehensive API endpoints for Civitai Browser functionality
-- Full OpenAPI documentation at `/docs`
-- Integrates with the existing Civitai Browser extension
+This extension provides just two essential API endpoints:
 
-## Available Endpoints
+1. **Check if a model exists**: `POST /civitai/exists`
+2. **Download a model**: `POST /civitai/download`
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/civitai/folders` | List available model folders |
-| GET | `/civitai/models` | Search Civitai models |
-| GET | `/civitai/models/{model_id}` | Get specific model details |
-| GET | `/civitai/models/{model_id}/versions` | Get model versions |
-| POST | `/civitai/download` | Download a model |
-| GET | `/civitai/docs` | Redirects to API documentation |
+Both endpoints have full documentation available in the Swagger UI at `/docs`.
 
 ## Example Usage
 
-### Search for models
+### Check if a model exists
 ```
-GET /civitai/models?limit=10&page=1&query=realistic&type=LORA
+POST /civitai/exists
+Content-Type: application/json
+
+{
+    "model_id": 12345,
+    "model_type": "lora"
+}
 ```
 
-### Get model details
-```
-GET /civitai/models/12345
+Response:
+```json
+{
+    "exists": true,
+    "model_id": 12345,
+    "version_id": 67890,
+    "filename": "example_model.safetensors",
+    "path": "/workspace/stable-diffusion-webui/models/Lora/example_model.safetensors"
+}
 ```
 
 ### Download a model
@@ -57,19 +60,31 @@ Content-Type: application/json
 
 {
     "model_id": 12345,
-    "model_type": "lora"
+    "model_type": "lora",
+    "force": false
 }
 ```
 
-## Documentation
-
-Access the full API documentation by opening your browser to:
+Response:
+```json
+{
+    "success": true,
+    "message": "Model downloaded successfully",
+    "file_path": "/workspace/stable-diffusion-webui/models/Lora/example_model.safetensors",
+    "model_id": 12345,
+    "version_id": 67890
+}
 ```
-http://localhost:7860/docs
-```
 
-Navigate to the "Civitai Browser" section to see all available endpoints.
+## Supported Model Types
+
+- `checkpoint` or `ckpt`: Stable Diffusion checkpoints
+- `lora` or `locon`: LoRA models
+- `lycoris` or `lyco`: LyCORIS models
+- `embedding`, `textualinversion`, or `ti`: Textual Inversion embeddings
+- `hypernetwork`: Hypernetworks
+- `vae`: VAE models
 
 ## License
 
-Same as the original Civitai Browser extension (MIT)
+MIT

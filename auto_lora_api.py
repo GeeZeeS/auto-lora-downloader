@@ -1,13 +1,15 @@
-from modules.api.api import Api
-from modules import shared
 import gradio as gr
+import modules.scripts as scripts
+from modules import script_callbacks
 import os
+import sys
 import json
 import requests
 import time
 from pathlib import Path
-from modules.processing import StableDiffusionProcessingTxt2Img
-from fastapi import Body
+import copy
+from fastapi import FastAPI, Body
+from fastapi.responses import JSONResponse
 from modules.api.models import *
 from typing import List, Dict, Any
 
@@ -43,6 +45,7 @@ def save_config():
 # Initialize models path
 def init_models_path():
     if not config["models_path"]:
+        from modules import shared
         # Try to get the path from the shared settings
         lora_dir = shared.cmd_opts.lora_dir
         if lora_dir:
@@ -247,82 +250,29 @@ def check_lora_exists(lora_name):
     
     return False
 
-# Custom API endpoint model
-class Txt2ImgWithLoRARequest(StableDiffusionTxt2ImgProcessingAPI):
-    lora_model_ids: List[str] = []
+# Script class for the WebUI
+class AutoLoRADownloaderScript(scripts.Script):
+    def title(self):
+        return "Auto LoRA Downloader"
 
-# Setup API
-def setup_api(api: Api):
-    init_models_path()
-    load_config()
+    def show(self, is_img2img):
+        return scripts.AlwaysVisible
 
-    @api.post("/txt2img-with-lora")
-    def txt2img_with_lora(txt2img_with_lora_request: Txt2ImgWithLoRARequest = Body(...)):
-        # Extract model IDs
-        model_ids = txt2img_with_lora_request.lora_model_ids
-        lora_results = {}
-        
-        # Download missing LoRAs
-        if model_ids and config["enabled"]:
-            lora_results = download_loras_by_ids(model_ids)
-        
-        # Process standard txt2img
-        txt2img_request = txt2img_with_lora_request.dict()
-        txt2img_request.pop("lora_model_ids", None)
-        
-        # Call the standard API
-        result = api.txt2img(StableDiffusionTxt2ImgProcessingAPI(**txt2img_request))
-        
-        # Add LoRA download results
-        result_dict = result
-        if isinstance(result, dict):  # It should be a dict already
-            result_dict["lora_downloads"] = lora_results
-        
-        return result_dict
-
-# UI components
-def on_ui_tabs():
-    with gr.Blocks() as ui_component:
-        with gr.Row():
-            with gr.Column():
-                gr.HTML("<h2>Auto LoRA Downloader</h2>")
-                
-                enabled = gr.Checkbox(
-                    label="Enable Auto LoRA Downloader",
-                    value=config["enabled"],
-                    info="Toggle the extension on/off"
-                )
-                
-                auto_download = gr.Checkbox(
-                    label="Auto-download missing LoRAs",
-                    value=config["auto_download"],
-                    info="Automatically download missing LoRAs from CivitAI"
-                )
-                
-                models_path = gr.Textbox(
-                    label="LoRA Models Path",
-                    value=config["models_path"],
-                    info="Directory where LoRA models will be saved"
-                )
-                
+    def ui(self, is_img2img):
+        with gr.Group():
+            with gr.Accordion("Auto LoRA Downloader", open=False):
+                enabled = gr.Checkbox(label="Enable Auto LoRA Downloader", value=config["enabled"])
+                auto_download = gr.Checkbox(label="Auto-download missing LoRAs", value=config["auto_download"])
+                models_path = gr.Textbox(label="LoRA Models Path", value=config["models_path"])
                 civitai_api_key = gr.Textbox(
                     label="CivitAI API Key (Optional)",
                     value=config["civitai_api_key"],
-                    type="password",
-                    info="Your CivitAI API key for higher rate limits"
+                    type="password"
                 )
-                
-                download_timeout = gr.Number(
-                    label="Download Timeout (seconds)",
-                    value=config["download_timeout"],
-                    info="Maximum time allowed for downloads"
-                )
-                
+                download_timeout = gr.Number(label="Download Timeout (seconds)", value=config["download_timeout"])
                 save_button = gr.Button(value="Save Settings")
-                
-                # Status message
                 status_text = gr.HTML("<p>Auto LoRA Downloader is ready.</p>")
-                
+        
         def save_settings():
             config["enabled"] = enabled.value
             config["auto_download"] = auto_download.value
@@ -334,41 +284,124 @@ def on_ui_tabs():
             return "<p style='color: green'>Settings saved successfully!</p>"
         
         save_button.click(fn=save_settings, outputs=[status_text])
-                
-    return [(ui_component, "Auto LoRA Downloader", "auto_lora_downloader")]
+        
+        return [enabled, auto_download]
 
-# Main hook for processing before generation starts
-def process_before_generation(p: StableDiffusionProcessingTxt2Img):
-    """Process prompts before generation to download any missing LoRAs"""
-    if not config["enabled"] or not config["auto_download"]:
-        return
-    
-    # Get the prompt based on processing type
-    prompt = p.prompt
-    
-    # Extract LoRA models from the prompt
-    lora_models = extract_lora_from_prompt(prompt)
-    
-    if not lora_models:
-        return
-    
-    print(f"Found LoRA models in prompt: {lora_models}")
-    
-    # Check each LoRA model
-    for lora_name in lora_models:
-        if not check_lora_exists(lora_name):
-            print(f"LoRA model not found locally: {lora_name}")
-            
-            # Search on CivitAI
-            model_info = search_lora_on_civitai(lora_name)
-            
-            if model_info:
-                print(f"Found model on CivitAI: {model_info['name']}")
-                downloaded_filename = download_lora(model_info)
+    def process(self, p, enabled, auto_download):
+        if not enabled or not auto_download:
+            return
+        
+        # Get the prompt
+        prompt = p.prompt
+        
+        # Extract LoRA models from the prompt
+        lora_models = extract_lora_from_prompt(prompt)
+        
+        if not lora_models:
+            return
+        
+        print(f"Found LoRA models in prompt: {lora_models}")
+        
+        # Check each LoRA model
+        for lora_name in lora_models:
+            if not check_lora_exists(lora_name):
+                print(f"LoRA model not found locally: {lora_name}")
                 
-                if downloaded_filename:
-                    print(f"Successfully downloaded LoRA: {downloaded_filename}")
+                # Search on CivitAI
+                model_info = search_lora_on_civitai(lora_name)
+                
+                if model_info:
+                    print(f"Found model on CivitAI: {model_info['name']}")
+                    downloaded_filename = download_lora(model_info)
+                    
+                    if downloaded_filename:
+                        print(f"Successfully downloaded LoRA: {downloaded_filename}")
+                    else:
+                        print(f"Failed to download LoRA: {lora_name}")
                 else:
-                    print(f"Failed to download LoRA: {lora_name}")
-            else:
-                print(f"Could not find LoRA on CivitAI: {lora_name}")
+                    print(f"Could not find LoRA on CivitAI: {lora_name}")
+
+# API endpoints for LoRA downloading
+def setup_api(app: FastAPI):
+    # Initialize config
+    init_models_path()
+    load_config()
+
+    # Define the request model for txt2img with LoRA downloading
+    class Txt2ImgWithLoRARequest(StableDiffusionTxt2ImgProcessingAPI):
+        lora_model_ids: List[str] = []
+
+    @app.post("/sdapi/v1/txt2img-with-lora")
+    async def txt2img_with_lora(req: Txt2ImgWithLoRARequest = Body(...)):
+        from modules.api.api import Api
+        
+        # Extract model IDs
+        model_ids = req.lora_model_ids
+        lora_results = {}
+        
+        # Download missing LoRAs
+        if model_ids and config["enabled"]:
+            lora_results = download_loras_by_ids(model_ids)
+        
+        # Process with standard txt2img
+        txt2img_request = copy.deepcopy(req.dict())
+        if "lora_model_ids" in txt2img_request:
+            txt2img_request.pop("lora_model_ids")
+        
+        # Call the standard API endpoint
+        try:
+            # Get api instance - direct approach
+            api = Api(app, None, None)  # app, queue_lock, devices
+            result = api.txt2img(StableDiffusionTxt2ImgProcessingAPI(**txt2img_request))
+            
+            # Add lora_downloads to the result
+            if isinstance(result, dict):
+                result["lora_downloads"] = lora_results
+            
+            return result
+        except Exception as e:
+            print(f"Error calling txt2img: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Alternative approach - forward the request
+            from modules.api.api import txt2img_api
+            result = txt2img_api(txt2img_request)
+            
+            # Add lora_downloads to the result
+            if isinstance(result, dict):
+                result["lora_downloads"] = lora_results
+            
+            return result
+    
+    @app.post("/sdapi/v1/check-lora")
+    async def check_lora(
+        model_ids: List[str] = Body(..., description="CivitAI model IDs to check/download")
+    ):
+        """Check if LoRA models exist locally and download them if they don't"""
+        if not config["enabled"]:
+            return JSONResponse(
+                content={"error": "Auto LoRA Downloader is disabled"}
+            )
+        
+        try:
+            results = download_loras_by_ids(model_ids)
+            return JSONResponse(
+                content={
+                    "status": "success",
+                    "results": results
+                }
+            )
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={"error": str(e)}
+            )
+    
+    print("Registered Auto LoRA Downloader API endpoints: /sdapi/v1/txt2img-with-lora and /sdapi/v1/check-lora")
+
+# Initialization function that will be called by the WebUI
+def on_app_started(_, app):
+    setup_api(app)
+
+script_callbacks.on_app_started(on_app_started)

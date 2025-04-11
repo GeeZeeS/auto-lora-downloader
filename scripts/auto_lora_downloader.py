@@ -401,19 +401,35 @@ def on_app_started(_gradio_app, _demo):
     
     # Register API endpoint
     try:
+        # Import the necessary modules
         from modules.api.api import app
+        from fastapi import APIRouter
         
-        # Add the API endpoint with proper documentation
-        app.add_api_route(
-            "/sdapi/v1/txt2img-with-lora", 
-            api_txt2img_with_lora_download, 
-            methods=["POST"],
-            response_model=Txt2ImgWithLoRADownloadResponse,
-            description="Generate images with txt2img and automatically download missing LoRAs by their CivitAI model IDs",
-            tags=["Generation"]
-        )
+        # Get the existing API router if available
+        api_router = next((router for router in app.routes if isinstance(router, APIRouter) and router.prefix == "/sdapi"), None)
         
-        print("Registered /sdapi/v1/txt2img-with-lora API endpoint")
+        if api_router:
+            # Add to existing router if found
+            api_router.add_api_route(
+                "/txt2img-with-lora", 
+                api_txt2img_with_lora_download, 
+                methods=["POST"],
+                response_model=Txt2ImgWithLoRADownloadResponse,
+                description="Generate images with txt2img and automatically download missing LoRAs by their CivitAI model IDs",
+                tags=["Generation"]
+            )
+        else:
+            # Add directly to app otherwise
+            app.add_api_route(
+                "/sdapi/v1/txt2img-with-lora", 
+                api_txt2img_with_lora_download, 
+                methods=["POST"],
+                response_model=Txt2ImgWithLoRADownloadResponse,
+                description="Generate images with txt2img and automatically download missing LoRAs by their CivitAI model IDs",
+                tags=["Generation"]
+            )
+        
+        print("Registered txt2img-with-lora API endpoint")
     except Exception as e:
         print(f"Failed to register custom API endpoint: {e}")
 

@@ -249,9 +249,31 @@ def add_api_routes(app: FastAPI):
             headers = {}
             if civitai_settings.api_key:
                 headers["Authorization"] = f"Bearer {civitai_settings.api_key}"
+                print(f"Using API key: {civitai_settings.api_key[:5]}...{civitai_settings.api_key[-5:] if len(civitai_settings.api_key) > 10 else ''}")
+            else:
+                print("No API key configured")
+            
+            print(f"Downloading from URL: {url}")
+            print(f"Using headers: {headers}")
+            
+            # Check if this is a direct download URL or needs to be modified
+            if '/api/download/models/' in url:
+                # This is already a download URL
+                download_url = url
+            elif '/models/' in url and not url.startswith('https://civitai.com/api/'):
+                # Convert regular model URL to API download URL
+                model_id = url.split('/models/')[1].split('/')[0].split('?')[0]
+                download_url = f"https://civitai.com/api/download/models/{model_id}"
+                print(f"Converted URL to download URL: {download_url}")
+            else:
+                download_url = url
             
             # Download the file
-            with requests.get(url, stream=True, headers=headers) as r:
+            with requests.get(download_url, stream=True, headers=headers) as r:
+                # Print response info for debugging
+                print(f"Response status: {r.status_code}")
+                print(f"Response headers: {dict(r.headers)}")
+                
                 r.raise_for_status()
                 total = int(r.headers.get('content-length', 0))
                 
@@ -272,8 +294,25 @@ def add_api_routes(app: FastAPI):
             return True
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 401:
-                print(f"Authentication required for download. Please set your Civitai API key with the /civitai/settings/api-key endpoint.")
-            print(f"Download error: {str(e)}")
+                print(f"Authentication error 401: {str(e)}")
+                print("This model requires proper authentication.")
+                print("Possible solutions:")
+                print("1. Check if your API key is correct")
+                print("2. Make sure your API key has 'Models:Read' permission")
+                print("3. This model might require you to be logged in with a Civitai account that has access")
+                # Try to get the response body for more details
+                try:
+                    error_details = e.response.json()
+                    print(f"Error details: {error_details}")
+                except:
+                    pass
+            elif e.response.status_code == 403:
+                print(f"Access forbidden (403): {str(e)}")
+                print("This model might be restricted or private.")
+            elif e.response.status_code == 404:
+                print(f"Model not found (404): {str(e)}")
+            else:
+                print(f"HTTP error: {str(e)}")
             return False
         except Exception as e:
             print(f"Download error: {str(e)}")

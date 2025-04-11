@@ -240,7 +240,7 @@ def add_api_routes(app: FastAPI):
         return None
 
     def download_model_file(url, dest_path):
-        """Download a file with progress reporting"""
+        """Download a file with progress reporting and rename to remove numeric suffix"""
         try:
             # Create directory if needed
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -282,7 +282,22 @@ def add_api_routes(app: FastAPI):
                                 sys.stdout.flush()
             
             print(f"\nDownload completed: {dest_path}")
-            return True
+            
+            # Rename file to remove numeric suffix
+            file_dir = os.path.dirname(dest_path)
+            file_name = os.path.basename(dest_path)
+            
+            # Use regex to remove the numeric suffix before the extension
+            import re
+            new_file_name = re.sub(r'_\d+(\.\w+)$', r'\1', file_name)
+            
+            if new_file_name != file_name:
+                new_dest_path = os.path.join(file_dir, new_file_name)
+                os.rename(dest_path, new_dest_path)
+                print(f"File renamed from {file_name} to {new_file_name}")
+                return True, new_dest_path
+            
+            return True, dest_path
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 401:
                 print(f"Authentication error 401: {str(e)}")
@@ -304,10 +319,10 @@ def add_api_routes(app: FastAPI):
                 print(f"Model not found (404): {str(e)}")
             else:
                 print(f"HTTP error: {str(e)}")
-            return False
+            return False, None
         except Exception as e:
             print(f"Download error: {str(e)}")
-            return False
+            return False, None
 
     # Check if model exists endpoint
     @app.post("/civitai/exists", response_model=ModelResponse, tags=["Civitai Browser"])

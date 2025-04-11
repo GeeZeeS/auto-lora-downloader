@@ -6,97 +6,22 @@ from typing import List, Optional, Dict, Any, Union
 from fastapi import FastAPI, Depends, HTTPException, Query, Body
 from pydantic import BaseModel, Field
 
-# Import original extension modules
-# Update these paths as needed based on where the original extension is installed
-original_extension_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sd-webui-civbrowser")
-if original_extension_path not in sys.path:
-    sys.path.append(original_extension_path)
+# Add path to Civitai Browser extension
+civbrowser_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sd-webui-civbrowser")
+if civbrowser_path not in sys.path:
+    sys.path.append(civbrowser_path)
 
-try:
-    from scripts.civitai_api import CivitaiAPI
-    from scripts.civbrowser_lib import get_model_folders, get_image_dir, get_preview_dir, get_temp_dir, parse_generation_parameters
-except ImportError:
-    # If original modules can't be imported, define minimum necessary functionality
-    class CivitaiAPI:
-        def __init__(self):
-            self.base_url = "https://civitai.com/api/v1"
-            self.headers = {
-                "Content-Type": "application/json"
-            }
-            
-        def get_models(self, query_params=None):
-            url = f"{self.base_url}/models"
-            if query_params:
-                url += "?" + "&".join([f"{k}={v}" for k, v in query_params.items()])
-            response = requests.get(url, headers=self.headers)
-            return response.json()
-        
-        def get_model(self, model_id):
-            url = f"{self.base_url}/models/{model_id}"
-            response = requests.get(url, headers=self.headers)
-            return response.json()
-            
-        def get_model_versions(self, model_id):
-            url = f"{self.base_url}/models/{model_id}/versions"
-            response = requests.get(url, headers=self.headers)
-            return response.json()
-            
-        def get_images(self, query_params=None):
-            url = f"{self.base_url}/images"
-            if query_params:
-                url += "?" + "&".join([f"{k}={v}" for k, v in query_params.items()])
-            response = requests.get(url, headers=self.headers)
-            return response.json()
-    
-    def get_model_folders():
-        """Returns a list of model folders"""
-        from modules.paths_internal import models_path
-        from modules import shared
-        
-        model_folders = {}
-        for key, path in {
-            'ckpt': os.path.join(models_path, "Stable-diffusion"),
-            'lora': os.path.join(models_path, "Lora"),
-            'lyco': os.path.join(models_path, "LyCORIS"),
-            'vae': os.path.join(models_path, "VAE"),
-            'hypernetwork': os.path.join(models_path, "hypernetwork"),
-            'embedding': shared.cmd_opts.embeddings_dir,
-            'controlnet': shared.cmd_opts.controlnet_dir,
-        }.items():
-            if os.path.isdir(path):
-                model_folders[key] = path
-        return model_folders
-
-    def get_image_dir():
-        """Returns the image directory"""
-        from modules import shared
-        return os.path.join(shared.data_path, "extensions", "sd-webui-civbrowser", "images")
-        
-    def get_preview_dir():
-        """Returns the preview directory"""
-        from modules import shared
-        return os.path.join(shared.data_path, "extensions", "sd-webui-civbrowser", "preview")
-        
-    def get_temp_dir():
-        """Returns the temp directory"""
-        from modules import shared
-        return os.path.join(shared.data_path, "extensions", "sd-webui-civbrowser", "temp")
-        
-    def parse_generation_parameters(x):
-        """Parses generation parameters"""
-        return {}
+# Import from Civitai Browser extension
+from scripts.civitai_api import CivitaiAPI
+from scripts.civbrowser_lib import (get_model_folders, get_image_dir, 
+                                    get_preview_dir, get_temp_dir, 
+                                    download_file_with_progressbar, 
+                                    find_available_file_name)
 
 # Create the FastAPI app
 civitai_api = CivitaiAPI()
 
 # Define Pydantic models for API documentation
-class ModelType(BaseModel):
-    name: str = Field(..., description="Model type name")
-    path: str = Field(..., description="Path to model directory")
-
-class ModelFolder(BaseModel):
-    folders: Dict[str, str] = Field(..., description="Available model folders by type")
-
 class ModelSearchParams(BaseModel):
     limit: Optional[int] = Field(20, description="Number of items to return per page")
     page: Optional[int] = Field(1, description="Page number")
@@ -123,22 +48,47 @@ class ModelDetail(BaseModel):
 class DownloadRequest(BaseModel):
     model_id: int = Field(..., description="Civitai Model ID")
     version_id: Optional[int] = Field(None, description="Specific version ID to download (defaults to latest)")
-    model_type: str = Field(..., description="Model type (ckpt, lora, etc.)")
+    model_type: str = Field(..., description="Model type (checkpoint, lora, etc.)")
 
 class DownloadResponse(BaseModel):
     success: bool = Field(..., description="Download success status")
     message: str = Field(..., description="Status message")
     file_path: Optional[str] = Field(None, description="Path to downloaded file")
 
+# Debug helper
+def debug_api_request(request_data, endpoint="download"):
+    """Helper function to log API request data for debugging"""
+    import json
+    import datetime
+    import os
+    
+    # Get the log directory
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Create log filename with timestamp
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"api_{endpoint}_{timestamp}.json")
+    
+    # Log the request data
+    with open(log_file, "w") as f:
+        json.dump(request_data, f, indent=2)
+    
+    print(f"API request logged to {log_file}")
+    return log_file
+
 # Function to register our API routes with FastAPI app
 def register_civbrowser_api(app: FastAPI):
     """Register Civitai Browser API routes with the main FastAPI app"""
     
     # Get model folders
-    @app.get("/civitai/folders", response_model=ModelFolder, tags=["Civitai Browser"])
+    @app.get("/civitai/folders", tags=["Civitai Browser"])
     async def get_folders():
         """Get available model folders"""
-        return {"folders": get_model_folders()}
+        folders = get_model_folders()
+        # Convert to regular dictionary with path strings
+        folder_dict = {k: str(v) for k, v in folders.items()}
+        return {"folders": folder_dict}
     
     # Search models
     @app.get("/civitai/models", response_model=ModelResponse, tags=["Civitai Browser"])
@@ -196,6 +146,9 @@ def register_civbrowser_api(app: FastAPI):
     async def download_model(request: DownloadRequest):
         """Download a model from Civitai"""
         try:
+            # Log the request for debugging
+            debug_api_request(request.dict())
+            
             model_id = request.model_id
             version_id = request.version_id
             model_type = request.model_type
@@ -231,47 +184,73 @@ def register_civbrowser_api(app: FastAPI):
                 else:
                     raise HTTPException(status_code=404, detail="No files found for this model version")
             
-            # Get model folders
+            # Get model folders (using Civitai Browser's function)
             model_folders = get_model_folders()
             
-            if model_type not in model_folders:
-                raise HTTPException(status_code=400, detail=f"Invalid model type: {model_type}")
+            # Map model_type to the correct folder key
+            folder_key = model_type.lower()
             
-            # Download destination
-            dest_dir = model_folders[model_type]
+            # Map common terms to Civitai Browser's keys
+            if folder_key == "checkpoint":
+                folder_key = "ckpt"
+            elif folder_key == "textualinversion" or folder_key == "ti":
+                folder_key = "embedding"
+            elif folder_key == "hypernetworks":
+                folder_key = "hypernetwork"
+                
+            if folder_key not in model_folders:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid model type: {model_type}. Valid types: {list(model_folders.keys())}"
+                )
+            
+            # Get destination directory
+            dest_dir = model_folders[folder_key]
+            
+            # Get filename and sanitize if needed
             filename = file_to_download.get("name")
-            dest_path = os.path.join(dest_dir, filename)
+            if not filename:
+                raise HTTPException(status_code=404, detail="Filename not found in model data")
+            
+            # Use Civitai Browser's find_available_file_name to avoid conflicts
+            full_path = find_available_file_name(os.path.join(dest_dir, filename))
             
             # Check if already downloaded
-            if os.path.exists(dest_path):
+            if os.path.exists(full_path):
                 return {
                     "success": True,
                     "message": "File already exists",
-                    "file_path": dest_path
+                    "file_path": full_path
                 }
             
-            # Download file
+            # Get download URL
             download_url = file_to_download.get("downloadUrl")
             if not download_url:
                 raise HTTPException(status_code=404, detail="Download URL not found")
             
-            response = requests.get(download_url, stream=True)
-            response.raise_for_status()
+            print(f"Downloading {filename} to {full_path}")
             
-            with open(dest_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            
+            # Use Civitai Browser's download function
+            success = download_file_with_progressbar(download_url, full_path)
+            
+            if not success:
+                raise HTTPException(status_code=500, detail="Download failed")
             
             return {
                 "success": True,
                 "message": "File downloaded successfully",
-                "file_path": dest_path
+                "file_path": full_path
             }
             
         except HTTPException:
             raise
         except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"Error downloading model: {error_details}")
             raise HTTPException(status_code=500, detail=f"Error downloading model: {str(e)}")
     
     # Return our API documentation

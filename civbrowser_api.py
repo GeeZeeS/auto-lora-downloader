@@ -342,6 +342,68 @@ def add_api_routes(app: FastAPI):
     # Return our app with routes added
     return app
 
+@app.post("/civitai/debug/files", tags=["Civitai Browser"])
+async def debug_model_files(
+    model_type: str = Query(..., description="Model type (checkpoint, lora, etc.)"),
+    search_term: Optional[str] = Query(None, description="Optional search term to filter files")
+):
+    """Debug endpoint to list all files of a given model type, optionally filtered by search term"""
+    try:
+        # Get model folder
+        folder = get_model_folder(model_type)
+        if not folder:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid model type: {model_type}. Available types: checkpoint, lora, lycoris, embedding, hypernetwork, vae"
+            )
+        
+        # List all files in the folder
+        try:
+            files = os.listdir(folder)
+        except Exception as e:
+            return {
+                "error": f"Could not list files in folder: {str(e)}",
+                "folder": folder,
+                "exists": os.path.exists(folder)
+            }
+        
+        # Filter by search term if provided
+        if search_term:
+            search_term = search_term.lower()
+            files = [f for f in files if search_term in f.lower()]
+        
+        # Return file details
+        file_details = []
+        for filename in files:
+            full_path = os.path.join(folder, filename)
+            try:
+                size = os.path.getsize(full_path)
+                modified = os.path.getmtime(full_path)
+                file_details.append({
+                    "filename": filename,
+                    "path": full_path,
+                    "size_bytes": size,
+                    "size_mb": round(size / (1024 * 1024), 2),
+                    "modified": modified
+                })
+            except Exception as e:
+                file_details.append({
+                    "filename": filename,
+                    "path": full_path,
+                    "error": str(e)
+                })
+        
+        return {
+            "folder": folder,
+            "file_count": len(files),
+            "files": file_details
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
+
 # Function to register with the webui
 def on_app_started(demo, app):
     """Register API routes when the webui starts"""

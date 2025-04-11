@@ -41,6 +41,12 @@ def add_api_routes(app: FastAPI):
         model_id: int = Field(..., description="Civitai Model ID")
         version_id: Optional[int] = Field(None, description="Version ID")
 
+    # Model deletion request
+    class ModelDeleteRequest(BaseModel):
+        model_type: str = Field(..., description="Model type (checkpoint, lora, etc.)")
+        filename: str = Field(..., description="Filename to delete")
+        empty_trash: bool = Field(True, description="Whether to empty trash after deletion")
+    
     # Helper functions
     def get_civitai_api():
         """Get the CivitaiAPI instance"""
@@ -427,6 +433,217 @@ def add_api_routes(app: FastAPI):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
 
+    @app.get("/civitai/storage", tags=["Civitai Browser"])
+    async def get_storage_info():
+        """Get storage information for the system and model directories"""
+        import shutil
+        import subprocess
+        
+        try:
+            # Get system-wide storage info
+            total, used, free = shutil.disk_usage("/")
+            
+            # Convert to more readable format
+            total_gb = round(total / (1024**3), 2)
+            used_gb = round(used / (1024**3), 2)
+            free_gb = round(free / (1024**3), 2)
+            used_percent = round((used / total) * 100, 2)
+            
+            # Get size of model directories
+            model_sizes = {}
+            for model_type in ["checkpoint", "lora", "lycoris", "embedding", "hypernetwork", "vae"]:
+                folder = get_model_folder(model_type)
+                if folder and os.path.exists(folder):
+                    try:
+                        # Use du command for more accurate directory size calculation
+                        result = subprocess.run(
+                            ["du", "-sh", folder], 
+                            capture_output=True, 
+                            text=True, 
+                            check=True
+                        )
+                        # Parse the output (format: "10M /path/to/folder")
+                        size_str = result.stdout.strip().split()[0]
+                        model_sizes[model_type] = size_str
+                    except (subprocess.SubprocessError, IndexError):
+                        # Fallback to Python directory size calculation
+                        size_bytes = 0
+                        for dirpath, dirnames, filenames in os.walk(folder):
+                            for f in filenames:
+                                fp = os.path.join(dirpath, f)
+                                if os.path.exists(fp):
+                                    size_bytes += os.path.getsize(fp)
+                        
+                        # Convert to human-readable format
+                        if size_bytes < 1024:
+                            size_str = f"{size_bytes}B"
+                        elif size_bytes < 1024**2:
+                            size_str = f"{round(size_bytes/1024, 2)}KB"
+                        elif size_bytes < 1024**3:
+                            size_str = f"{round(size_bytes/(1024**2), 2)}MB"
+                        else:
+                            size_str = f"{round(size_bytes/(1024**3), 2)}GB"
+                        
+                        model_sizes[model_type] = size_str
+            
+            # Check if trash exists and get its size
+            trash_dir = os.path.expanduser("~/.local/share/Trash")
+            trash_exists = os.path.exists(trash_dir)
+            trash_size = "0"
+            
+            if trash_exists:
+                try:
+                    result = subprocess.run(
+                        ["du", "-sh", trash_dir], 
+                        capture_output=True, 
+                        text=True, 
+                        check=True
+                    )
+                    trash_size = result.stdout.strip().split()[0]
+                except (subprocess.SubprocessError, IndexError):
+                    trash_size = "Unknown"
+            
+            return {
+                "system": {
+                    "total_gb": total_gb,
+                    "used_gb": used_gb,
+                    "free_gb": free_gb,
+                    "used_percent": used_percent
+                },
+                "model_directories": model_sizes,
+                "trash": {
+                    "exists": trash_exists,
+                    "size": trash_size
+                }
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error getting storage info: {str(e)}")
+
+    # Delete model endpoint
+    @app.post("/civitai/delete", tags=["Civitai Browser"])
+    async def delete_model(request: ModelDeleteRequest):
+        """Delete a model file and optionally empty the trash"""
+        try:
+            # Get model folder
+            folder = get_model_folder(request.model_type)
+            if not folder:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid model type: {request.model_type}"
+                )
+            
+            # Create full path
+            file_path = os.path.join(folder, request.filename)
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                # Try to find it with our more flexible matching
+                file_path = find_model_file(request.filename, request.model_type)
+                if not file_path:
+                    raise HTTPException(status_code=404, detail=f"File not found: {request.filename}")
+            
+            # Try moving to trash first (if available)
+            import subprocess
+            import shutil
+            
+            try:
+                # First try using trash-cli if available
+                subprocess.run(["trash-put", file_path], check=True)
+                deletion_method = "trash-cli"
+            except (subprocess.SubprocessError, FileNotFoundError):
+                try:
+                    # Try using gio trash if available
+                    subprocess.run(["gio", "trash", file_path], check=True)
+                    deletion_method = "gio"
+                except (subprocess.SubprocessError, FileNotFoundError):
+                    # Fall back to direct removal
+                    os.remove(file_path)
+                    deletion_method = "direct"
+            
+            # Empty trash if requested
+            trash_emptied = False
+            if request.empty_trash:
+                try:
+                    # Remove trash directories
+                    subprocess.run(["rm", "-rf", os.path.expanduser("~/.local/share/Trash/files")], check=True)
+                    subprocess.run(["rm", "-rf", os.path.expanduser("~/.local/share/Trash/info")], check=True)
+                    trash_emptied = True
+                except subprocess.SubprocessError as e:
+                    print(f"Error emptying trash: {str(e)}")
+            
+            # Refresh model list if needed
+            if request.model_type.lower() in ["checkpoint", "ckpt", "vae"]:
+                from modules import sd_models
+                sd_models.list_models()
+            
+            return {
+                "success": True,
+                "deleted_file": os.path.basename(file_path),
+                "deletion_method": deletion_method,
+                "trash_emptied": trash_emptied,
+                "path": file_path
+            }
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error deleting model: {str(e)}")
+    
+    # Empty trash endpoint
+    @app.post("/civitai/empty-trash", tags=["Civitai Browser"])
+    async def empty_trash():
+        """Empty the system trash folder"""
+        try:
+            import subprocess
+            
+            # Try to empty trash using various methods
+            trash_dir = os.path.expanduser("~/.local/share/Trash")
+            trash_exists = os.path.exists(trash_dir)
+            
+            if not trash_exists:
+                return {
+                    "success": True,
+                    "message": "Trash directory does not exist or is already empty"
+                }
+            
+            methods_tried = []
+            
+            # Try trash-empty command if available
+            try:
+                subprocess.run(["trash-empty"], check=True)
+                methods_tried.append("trash-empty command")
+            except (subprocess.SubprocessError, FileNotFoundError):
+                pass
+            
+            # Try gio trash --empty if available
+            try:
+                subprocess.run(["gio", "trash", "--empty"], check=True)
+                methods_tried.append("gio trash --empty command")
+            except (subprocess.SubprocessError, FileNotFoundError):
+                pass
+            
+            # Direct removal of trash directories
+            rm_success = True
+            try:
+                subprocess.run(["rm", "-rf", os.path.expanduser("~/.local/share/Trash/files")], check=True)
+                subprocess.run(["rm", "-rf", os.path.expanduser("~/.local/share/Trash/info")], check=True)
+                methods_tried.append("direct rm -rf command")
+            except subprocess.SubprocessError:
+                rm_success = False
+            
+            # Check if trash is now empty
+            trash_empty = not os.path.exists(os.path.expanduser("~/.local/share/Trash/files")) and \
+                          not os.path.exists(os.path.expanduser("~/.local/share/Trash/info"))
+            
+            return {
+                "success": trash_empty,
+                "methods_tried": methods_tried,
+                "trash_empty": trash_empty
+            }
+        
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error emptying trash: {str(e)}")
+    
     # Return our app with routes added
     return app
 
